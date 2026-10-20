@@ -262,8 +262,11 @@ async def run_processor():
             pending_item_ids = [item.id for item in pending_items] if pending_items else []
 
         if pending_item_ids:
-            # Reduce concurrent processing to 2 to conserve connections on t3.micro
-            semaphore = asyncio.Semaphore(2)
+            # Keep concurrency configurable because small single-process
+            # deployments, such as Render's free tier, need one job at a time.
+            semaphore = asyncio.Semaphore(
+                max(1, settings.KNOWLEDGE_PROCESSOR_CONCURRENCY)
+            )
 
             async def process_with_semaphore(item_id):
                 async with semaphore:

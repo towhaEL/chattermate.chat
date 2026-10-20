@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     REDIS_ENABLED: bool = os.getenv("REDIS_ENABLED", "false").lower() == "true"
 
+    # Free-tier deployments may not have a separate Render background worker.
+    # When enabled, the web process drains the knowledge queue itself.
+    RUN_KNOWLEDGE_PROCESSOR: bool = os.getenv(
+        "RUN_KNOWLEDGE_PROCESSOR", "false"
+    ).lower() == "true"
+    KNOWLEDGE_PROCESSOR_POLL_INTERVAL: int = int(
+        os.getenv("KNOWLEDGE_PROCESSOR_POLL_INTERVAL", "10")
+    )
+    KNOWLEDGE_PROCESSOR_CONCURRENCY: int = int(
+        os.getenv("KNOWLEDGE_PROCESSOR_CONCURRENCY", "2")
+    )
+
     # JWT
     SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "your-secret-key")
     ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")

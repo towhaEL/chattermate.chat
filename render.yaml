@@ -51,6 +51,20 @@ services:
         value: "false"
       - key: PRELOAD_MODELS
         value: "false"
+      - key: RUN_KNOWLEDGE_PROCESSOR
+        value: "true"
+      - key: KNOWLEDGE_PROCESSOR_POLL_INTERVAL
+        value: "10"
+      - key: KNOWLEDGE_PROCESSOR_CONCURRENCY
+        value: "1"
+      - key: KB_MAX_WORKERS
+        value: "1"
+      - key: EMBEDDING_MAX_WORKERS
+        value: "1"
+      - key: EMBEDDING_SINGLE_THREADED
+        value: "true"
+      - key: EMBEDDING_SEQUENTIAL_FALLBACK
+        value: "true"
 
   - type: web
     name: chattermate-web

@@ -53,8 +53,34 @@ except ImportError:
     print("Enterprise models not available")
 from app.api import session_to_agent
 from app.workers.chat_auto_closer import run_auto_closer_loop
+from app.workers.knowledge_processor import run_processor
+from contextlib import suppress
 
 logger = get_logger(__name__)
+
+
+async def run_knowledge_processor_loop() -> None:
+    """Drain queued knowledge jobs when no separate worker is available.
+
+    Render's free tier cannot run a separate background worker, so the
+    Blueprint can opt the API process into this lightweight polling loop.
+    Larger deployments should leave it disabled and run the normal worker
+    service instead.
+    """
+    interval = max(1, settings.KNOWLEDGE_PROCESSOR_POLL_INTERVAL)
+    logger.info(
+        "Starting in-process knowledge processor (poll=%ss, concurrency=%s)",
+        interval,
+        settings.KNOWLEDGE_PROCESSOR_CONCURRENCY,
+    )
+    while True:
+        try:
+            await run_processor()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("In-process knowledge processor iteration failed")
+        await asyncio.sleep(interval)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -65,9 +91,18 @@ async def lifespan(app: FastAPI):
     verify_secret_configuration()
     initialize_firebase()
     await startup_event(app)
-    yield
-    # Shutdown
-    pass
+    if settings.RUN_KNOWLEDGE_PROCESSOR:
+        app.state.knowledge_processor_task = asyncio.create_task(
+            run_knowledge_processor_loop()
+        )
+    try:
+        yield
+    finally:
+        processor_task = getattr(app.state, "knowledge_processor_task", None)
+        if processor_task:
+            processor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await processor_task
 
 # Move the CORS setup before app instantiation
 cors_origins = get_cors_origins()
