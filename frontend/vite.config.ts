@@ -6,12 +6,11 @@ import * as dotenv from 'dotenv'
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import vueJsx from '@vitejs/plugin-vue-jsx'
-import vueDevTools from 'vite-plugin-vue-devtools'
 import { VitePWA } from 'vite-plugin-pwa'
 import { THEME_COLORS } from './src/config/themeColors'
 
 // https://vite.dev/config/
-export default defineConfig(({ command, mode }) => {
+export default defineConfig(async ({ command, mode }) => {
   // Load env file based on `mode` in the current working directory.
   // When mode is 'prod' or 'dev', load .env.prod or .env.dev respectively
   let envDir = process.cwd()
@@ -68,7 +67,12 @@ export default defineConfig(({ command, mode }) => {
       }
     }),
     vueJsx(),
-    vueDevTools(),
+    // Vue DevTools is imported only for the dev server. Importing it while
+    // bundling for production can access browser-only globals in the Node
+    // build process (and is unnecessary in the deployed static site).
+    ...(command === 'serve'
+      ? [(await import('vite-plugin-vue-devtools')).default()]
+      : []),
     // Plugin to inject environment variables into HTML
     {
       name: 'html-transform',

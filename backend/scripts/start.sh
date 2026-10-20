@@ -4,10 +4,36 @@ set -e
 # Set environment variable to prevent tokenizer deadlock warnings
 export TOKENIZERS_PARALLELISM=false
 
-# Wait for PostgreSQL to be ready
-echo "Waiting for PostgreSQL..."
-while ! nc -z db 5432; do
-  sleep 0.1
+# Wait for PostgreSQL to be ready. Docker Compose exposes the database as
+# `db`, while Render supplies a full DATABASE_URL for its managed Postgres.
+# Resolve the host from DATABASE_URL so the same image works in both places.
+DB_HOST="${DB_HOST:-}"
+DB_PORT="${DB_PORT:-5432}"
+if [ -z "$DB_HOST" ] && [ -n "${DATABASE_URL:-}" ]; then
+  DB_HOST=$(python - "$DATABASE_URL" <<'PY'
+from sys import argv
+from urllib.parse import urlparse
+
+url = urlparse(argv[1])
+print(url.hostname or "")
+PY
+  )
+  DB_PORT=$(python - "$DATABASE_URL" <<'PY'
+from sys import argv
+from urllib.parse import urlparse
+
+print(urlparse(argv[1]).port or 5432)
+PY
+  )
+fi
+
+if [ -z "$DB_HOST" ]; then
+  DB_HOST=db
+fi
+
+echo "Waiting for PostgreSQL at ${DB_HOST}:${DB_PORT}..."
+while ! nc -z "$DB_HOST" "$DB_PORT"; do
+  sleep 0.5
 done
 echo "PostgreSQL is ready!"
 
@@ -39,7 +65,7 @@ echo "Starting FastAPI application with Gunicorn ($WORKERS workers)..."
 gunicorn app.main:app \
     --workers $WORKERS \
     --worker-class uvicorn.workers.UvicornWorker \
-    --bind 0.0.0.0:8000 \
+    --bind 0.0.0.0:${PORT:-8000} \
     --timeout 120 \
     --keep-alive 5 \
     --log-level info \
