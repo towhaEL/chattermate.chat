@@ -64,9 +64,11 @@ GENERATE_KEY_HINT = f"  {ENCRYPTION_KEY_HINT}"
 def load_key() -> bytes:
     """Return the raw Fernet key from ``ENCRYPTION_KEY``.
 
-    The env var holds the Fernet key base64-encoded a second time, which is the
-    format already in use for API-key encryption — decoding must stay identical or
-    every existing encrypted API key becomes unreadable.
+    The env var normally holds the Fernet key base64-encoded a second time,
+    which is the format already in use for API-key encryption. Render's
+    ``generateValue`` produces a base64-encoded raw 32-byte value instead, so
+    that form is accepted too and normalized to a Fernet key. Existing
+    double-encoded keys continue to decode identically.
 
     Outside development and tests a missing or malformed key is fatal: chat
     messages, session summaries and agent memory are all encrypted with it.
@@ -80,9 +82,26 @@ def load_key() -> bytes:
     env_key = os.getenv(ENCRYPTION_KEY_ENV)
     if env_key:
         try:
-            key = base64.b64decode(env_key)
-            Fernet(key)
-            return key
+            decoded = base64.b64decode(env_key, validate=True)
+
+            # Existing deployments store the Fernet key encoded a second time.
+            try:
+                Fernet(decoded)
+                return decoded
+            except Exception:
+                # Render's Blueprint generateValue is a base64-encoded raw
+                # 256-bit value. Convert that raw value to Fernet's URL-safe
+                # base64 representation without changing its entropy.
+                if len(decoded) != 32:
+                    raise
+                key = base64.urlsafe_b64encode(decoded)
+                Fernet(key)
+                logger.info(
+                    "%s is using a direct 256-bit base64 value; normalized it "
+                    "to Fernet format for this process",
+                    ENCRYPTION_KEY_ENV,
+                )
+                return key
         except Exception as e:
             logger.error(f"Invalid encryption key format: {str(e)}")
             if not is_throwaway_environment():

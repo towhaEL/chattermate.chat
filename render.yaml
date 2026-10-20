@@ -49,6 +49,8 @@ services:
         generateValue: true
       - key: S3_FILE_STORAGE
         value: "false"
+      - key: PRELOAD_MODELS
+        value: "false"
 
   - type: web
     name: chattermate-web

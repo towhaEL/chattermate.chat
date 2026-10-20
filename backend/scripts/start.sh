@@ -44,13 +44,19 @@ fi
 
 
 
-# Preload embedding models to avoid runtime issues
-echo "Preloading embedding models..."
-python scripts/preload_models.py
-if [ $? -eq 0 ]; then
-    echo "Models preloaded successfully!"
+# Preloading is useful on larger instances but can exceed the 512 MiB Render
+# free-tier limit. Keep it configurable; the model is loaded lazily when a
+# knowledge operation actually needs it.
+if [ "${PRELOAD_MODELS:-true}" = "true" ]; then
+    echo "Preloading embedding models..."
+    python scripts/preload_models.py
+    if [ $? -eq 0 ]; then
+        echo "Models preloaded successfully!"
+    else
+        echo "Warning: Model preloading failed. Continuing anyway..."
+    fi
 else
-    echo "Warning: Model preloading failed. Continuing anyway..."
+    echo "Skipping embedding model preload (PRELOAD_MODELS=${PRELOAD_MODELS})"
 fi
 
 # Run migrations
