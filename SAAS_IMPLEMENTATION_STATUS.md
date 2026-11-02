@@ -2,13 +2,13 @@
 
 Last updated: 2026-11-02
 
-This file tracks delivery against `docs/saas-conversion-plan.md`. The SaaS
+This file tracks delivery against the local SaaS conversion plan. The SaaS
 implementation remains on `codex/saas-billing-foundation` until it is ready
 for review and merge.
 
 ## Current increment: hosted reply metering contract
 
-Status: **in progress**
+Status: **complete in the open-source core**
 
 Completed in the open-source core:
 
