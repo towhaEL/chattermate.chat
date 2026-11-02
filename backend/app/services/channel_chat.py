@@ -53,13 +53,7 @@ from app.services.agent_rooms import USER_MESSAGE, relay_stored_message
 from app.services.business_message import business_message_context
 from app.services.channel_replies import inbound_attributes, reply_text
 from app.services.message_delivery import DeliveryResult, deliver_to_customer
-
-# Optional enterprise message-limit check (same seam as the widget path)
-try:
-    from app.enterprise.services.message_limit import check_message_limit
-    HAS_ENTERPRISE = True
-except ImportError:
-    HAS_ENTERPRISE = False
+from app.services.hosted_reply_metering import legacy_message_limit_allows
 
 logger = get_logger(__name__)
 
@@ -454,13 +448,9 @@ def _store_customer_message(db: Session, inbound: InboundMessage, session_record
 async def _within_message_limit(db: Session, org_id: str, ai_config) -> bool:
     """Enterprise subscription limit; permissive on any failure so the
     community edition and enterprise errors never block conversations."""
-    if not (HAS_ENTERPRISE and ai_config.model_type == AIModelType.CHATTERMATE):
+    if ai_config.model_type != AIModelType.CHATTERMATE:
         return True
-    try:
-        return await check_message_limit(db, org_id, None, None)
-    except Exception as e:
-        logger.error(f"Message limit check failed (allowing message): {e}")
-        return True
+    return await legacy_message_limit_allows(db, org_id)
 
 
 async def _run_chat_agent(db: Session, account: ChannelAccount, ai_config,
@@ -503,6 +493,12 @@ async def _run_chat_agent(db: Session, account: ChannelAccount, ai_config,
             agent_id=agent_id,
             customer_id=customer_id,
             user_attributes=attributes,
+            # Provider message ids survive webhook retries, so the private
+            # billing service can make one reply reservation idempotent.
+            generation_id=(
+                f"channel:{account.id}:{inbound.external_message_id}"
+                if inbound.external_message_id else None
+            ),
         )
         return response, chat_agent.last_bot_message_id
     except Exception as e:

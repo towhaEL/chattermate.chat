@@ -67,14 +67,7 @@ from app.services.ticket_csat import record_conversation_rating
 from app.repositories.jira import JiraRepository
 from app.models.ai_config import AIModelType
 from app.services.workflow_execution import WorkflowExecutionService
-
-
-# Try to import enterprise modules
-try:
-    from app.enterprise.services.message_limit import check_message_limit
-    HAS_ENTERPRISE = True
-except ImportError:
-    HAS_ENTERPRISE = False
+from app.services.hosted_reply_metering import legacy_message_limit_allows
 
 from app.utils.sanitize import sanitize_message
 
@@ -278,9 +271,10 @@ async def widget_connect(sid, environ, auth):
             _refuse_connection('AI configuration required', 'ai_config_missing')
         
         message_limit_reached = False
-        # Check message limits if enterprise module is available
-        if HAS_ENTERPRISE and ai_config.model_type == AIModelType.CHATTERMATE:
-            if not await check_message_limit(db, org_id, sid, sio):
+        # Older enterprise installs use a legacy counter at connect time. New
+        # SaaS billing reserves and commits per generated reply instead.
+        if ai_config.model_type == AIModelType.CHATTERMATE:
+            if not await legacy_message_limit_allows(db, org_id, sid, sio):
                 message_limit_reached = True
 
         
@@ -443,6 +437,9 @@ async def handle_widget_chat(sid, data):
             return
 
         session_id = session['session_id']
+        client_id = data.get('client_id')
+        if not (isinstance(client_id, str) and 0 < len(client_id) <= MAX_CLIENT_ID_LENGTH):
+            client_id = None
         
         # Upload files if provided
         uploaded_files = []
@@ -515,7 +512,7 @@ async def handle_widget_chat(sid, data):
         active_session = own_session if own_session and own_session.status in ACTIVE_STATUSES else None
 
         # Check message limit from session
-        if HAS_ENTERPRISE and session.get('message_limit_reached') and active_session and active_session.user_id is None:
+        if session.get('message_limit_reached') and active_session and active_session.user_id is None:
             logger.error(f"Message limit reached")
             await sio.emit('error', {
                     'error': 'Unable to process your message. Please contact support.',
@@ -629,7 +626,11 @@ async def handle_widget_chat(sid, data):
                     session_id=chat_agent.agent.session_id,
                     org_id=org_id,
                     agent_id=session['agent_id'],
-                    customer_id=customer_id)
+                    customer_id=customer_id,
+                    user_attributes={"client_id": client_id} if client_id else None,
+                    generation_id=(
+                        f"widget:{session_id}:{client_id}" if client_id else None
+                    ))
             finally:
                 await chat_agent.safe_cleanup_mcp_tools()
         elif active_session.status == SessionStatus.TRANSFERRED and active_session.user_id is None: # transferred and user has not taken over

@@ -670,6 +670,13 @@ export function useWidgetSocket() {
     // Send message function
     const sendMessage = async (newMessage: string, email: string, files: Array<{content: string, filename: string, content_type: string, size: number}> = []) => {
         if (!socket || (!newMessage.trim() && files.length === 0)) return
+
+        // A stable per-message id lets the hosted SaaS edition reserve usage
+        // idempotently when the transport retries. Self-hosted editions simply
+        // ignore this optional field.
+        const clientId = typeof globalThis.crypto?.randomUUID === 'function'
+            ? globalThis.crypto.randomUUID()
+            : `widget-${Date.now()}-${Math.random().toString(36).slice(2)}`
         
         // Add user message to display with temporary blob URLs for images
         const userMessage: any = {
@@ -713,7 +720,8 @@ export function useWidgetSocket() {
         socket.emit('chat', {
             message: newMessage,
             email: email,
-            files: files  // Send files with base64 content
+            files: files,  // Send files with base64 content
+            client_id: clientId,
         })
 
         hasStartedChat.value = true

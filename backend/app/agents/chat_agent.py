@@ -47,6 +47,11 @@ from app.agents.guardrail_policy import (
 )
 from app.utils.guardrail_runtime import BLOCK_REPLY, Surface, check_inbound, check_output
 from app.services.notifications import ChatNotificationEvent, notify_chat_event
+from app.services.hosted_reply_metering import (
+    authorize_hosted_reply,
+    commit_hosted_reply,
+    release_hosted_reply,
+)
 from app.models.user import User, user_groups
 from datetime import datetime
 from app.repositories.jira import JiraRepository
@@ -1349,15 +1354,25 @@ Keep your responses concise and focused. Provide clear, actionable information i
         serves a single turn, so the last one stored is this turn's reply."""
         self.last_bot_message_id = chat_repo.create_message(message_data).id
 
-    async def get_response(self, message: str, session_id: str = None, org_id: str = None, agent_id: str = None, customer_id: str = None, user_attributes: dict = None) -> ChatResponse:
+    async def get_response(self, message: str, session_id: str = None,
+                           org_id: str = None, agent_id: str = None,
+                           customer_id: str = None, user_attributes: dict = None,
+                           generation_id: str = None) -> ChatResponse:
         """
         Get a response from the agent.
 
         `user_attributes` are stored on the customer's message row (e.g. the
         button a channel customer tapped). The stored reply's row id is left
         on `last_bot_message_id` so a caller can annotate that exact row.
+
+        ``generation_id`` is an optional stable identifier supplied by a
+        channel/web client. When absent, the persisted inbound chat row is the
+        stable identifier for this generation. The private SaaS extension uses
+        it to reserve before inference and commit only after this method stores
+        the bot reply.
         """
         self.last_bot_message_id = None
+        reserved_generation_id = None
         try:
             # Update session and IDs if provided
             if session_id:
@@ -1386,7 +1401,7 @@ Keep your responses concise and focused. Provide clear, actionable information i
                 self.agent.session_id = session_id
 
                 # Create user message
-                chat_repo.create_message({
+                customer_message = chat_repo.create_message({
                     "message": message,
                     "message_type": "user",
                     "session_id": session_id,
@@ -1421,6 +1436,49 @@ Keep your responses concise and focused. Provide clear, actionable information i
                         "attributes": guardrail_verdict.as_attributes()
                     })
                     return blocked_response
+
+                # The inbound message is durable before model execution, so it
+                # is a safe idempotency source when a caller has no stronger
+                # provider/client message identifier.
+                stable_generation_id = generation_id or f"chat_history:{customer_message.id}"
+                usage = await authorize_hosted_reply(
+                    db,
+                    str(org_id),
+                    stable_generation_id,
+                    model_name=self.model_name,
+                    surface=self.channel,
+                )
+                if not usage.allowed:
+                    self._store_bot_message(chat_repo, {
+                        "message": usage.message,
+                        "message_type": "bot",
+                        "session_id": session_id,
+                        "organization_id": org_id,
+                        "agent_id": agent_id,
+                        "customer_id": customer_id,
+                        "attributes": {
+                            "usage_blocked": True,
+                            "usage_reason": usage.reason,
+                        },
+                    })
+                    return ChatResponse(
+                        message=usage.message,
+                        transfer_to_human=False,
+                        transfer_reason=None,
+                        transfer_description=None,
+                        end_chat=False,
+                        end_chat_reason=None,
+                        end_chat_description=None,
+                        request_rating=False,
+                        create_ticket=False,
+                        shopify_output=None,
+                    )
+
+                # A reservation-aware enterprise module atomically reserved a
+                # quota slot or wallet value. The no-op OSS path leaves this
+                # unset, so it never changes self-hosted behavior.
+                if usage.enforced:
+                    reserved_generation_id = stable_generation_id
 
                 # Reset citation collection and shown chunks for this turn
                 if self.knowledge_tool is not None:
@@ -1516,6 +1574,11 @@ Keep your responses concise and focused. Provide clear, actionable information i
                         chat_repo=chat_repo,
                         transfer_group_id=None  # Use agent's default group for regular transfers
                     )
+                    if reserved_generation_id:
+                        await commit_hosted_reply(
+                            db, reserved_generation_id, self.last_bot_message_id
+                        )
+                        reserved_generation_id = None
                     return response_content
 
                 # Reaching here means no live transfer happened — either transfer is
@@ -1569,11 +1632,33 @@ Keep your responses concise and focused. Provide clear, actionable information i
                     "attributes": attributes
                 })
 
+                if reserved_generation_id:
+                    await commit_hosted_reply(
+                        db, reserved_generation_id, self.last_bot_message_id
+                    )
+                    reserved_generation_id = None
+
                 return response_content
 
         except Exception as e:
             traceback.print_exc()
             logger.error(f"Chat agent error: {str(e)}")
+            if reserved_generation_id:
+                # The session used for inference may already be unwinding. Use
+                # a fresh one for the private reservation release rather than
+                # holding or reusing a failed transaction.
+                try:
+                    with SessionLocal() as metering_db:
+                        await release_hosted_reply(
+                            metering_db,
+                            reserved_generation_id,
+                            reason=f"generation_failed:{type(e).__name__}",
+                        )
+                except Exception:
+                    logger.exception(
+                        "Could not release hosted-reply reservation for %s",
+                        reserved_generation_id,
+                    )
             error_message = GENERIC_ERROR_MESSAGE
             
             # Create error response
